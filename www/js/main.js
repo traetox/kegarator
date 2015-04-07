@@ -23,6 +23,9 @@ function initHandler() {
 		buildGauges();
 		//kick off an update
 		tempUpdate();
+
+		//build graphs
+		buildGraphs();
 	}).fail(function(error) {
 		console.log("Failed to get config");
 		console.log(error);
@@ -98,10 +101,71 @@ function updateCompressorState(state) {
 	$('#compressor_state').attr('color', color)
 }
 
-function buildLogGraphs() {
-
+function buildGraphs() {
+	buildTemperatureGraphs();
+	buildCompressorGraphs();
 }
 
-function updateLogGraphs() {
+function buildTemperatureGraphs() {
+	var readings = [];
+	var labels = [];
+	
+	$.getJSON( "/api/temps/all", function( data ) {
+		if(data.length == 0) {
+			return;
+		}
+		labels.push("Time");
+		$.each(data[0].Temps, function(k, v) {
+			labels.push(k);
+		});
+		$.each(data, function(i, v) {
+			var t = new Date(data[i].TS)
+			var vals = [t]
+			$.each(data[i].Temps, function(j, temp) {
+				vals.push(data[i].Temps[j])
+			});
+			readings.push(vals)
+		});
+	}).fail(function(error) {
+		console.log("Failed to gather temp stamps "+error);
+	}).done(function() {
+		var dg = new Dygraph(document.getElementById("tempgraph"), readings,
+                   {
+		      title: "Temperatures",
+                      drawPoints: true,
+                      showRoller: true,
+                      labels: labels
+                   }
+                );
+                dg.updateOptions({'file': readings});
+	});
+}
 
+function buildCompressorGraphs() {
+	var readings = [];
+	var labels = ["Time", "Compressor Activity"];
+	
+	$.getJSON( "/api/compressor/all", function( data ) {
+		if(data.length == 0) {
+			return;
+		}
+		$.each(data, function(i, v) {
+			var start = new Date(data[i].Start)
+			var stop = new Date(data[i].Stop)
+			var timeOn = (stop.getTime() - start.getTime())/1000
+			readings.push([start, timeOn])
+		});
+	}).fail(function(error) {
+		console.log("Failed to gather temp stamps "+error);
+	}).done(function() {
+		var dg = new Dygraph(document.getElementById("compressorgraph"), readings,
+                   {
+		      title: "Compressor Engaged",
+                      drawPoints: true,
+                      showRoller: true,
+                      labels: labels
+                   }
+                );
+                dg.updateOptions({'file': readings});
+	});
 }
