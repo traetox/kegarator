@@ -47,7 +47,7 @@ func TestAddTemps(t *testing.T) {
 	for i := 0; i < testCount; i++ {
 		temps := make(map[string]float32, 1)
 		for j := 0; j < (i%10 + 1); j++ {
-			temps[fmt.Sprintf("%d", j)] = baseTemp+float32(i)+float32(j)/10
+			temps[fmt.Sprintf("%d", j)] = baseTemp + float32(i) + float32(j)/10
 		}
 		if err := tr.AddTemps(baseTime.Add(time.Second*time.Duration(i)), temps); err != nil {
 			t.Fatal(err)

@@ -1,24 +1,27 @@
 package main
 
 import (
-	"net"
-	"net/http"
 	"encoding/json"
 	"errors"
+	ds18b20 "github.com/traetox/goDS18B20"
+	gpio "github.com/traetox/goGPIO"
+	"log"
+	"net"
+	"net/http"
 	"sync"
 	"time"
-	"log"
-	ds18b20 "github.com/traetox/goDS18B20"
 )
 
 type webserver struct {
-	lst net.Listener
-	probes *ds18b20.ProbeGroup
-	srv    *http.Server
-	kt *kegTracker
+	lst        net.Listener
+	probes     *ds18b20.ProbeGroup
+	compressor *gpio.GPIO
+	srv        *http.Server
+	kt         *kegTracker
+	cfg        *conf
 }
 
-func NewWebserver(bind, serveDir string, probes *ds18b20.ProbeGroup, kt *kegTracker, lg *log.Logger) (*webserver, error) {
+func NewWebserver(bind, serveDir string, probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, kt *kegTracker, c *conf, lg *log.Logger) (*webserver, error) {
 	if probes == nil {
 		return nil, errors.New("nil probes")
 	}
@@ -28,9 +31,11 @@ func NewWebserver(bind, serveDir string, probes *ds18b20.ProbeGroup, kt *kegTrac
 	}
 
 	ws := &webserver{
-		lst: lst,
-		probes: probes,
-		kt:   kt,
+		lst:        lst,
+		probes:     probes,
+		compressor: compressor,
+		kt:         kt,
+		cfg:        c,
 	}
 
 	mux := http.NewServeMux()
@@ -39,15 +44,17 @@ func NewWebserver(bind, serveDir string, probes *ds18b20.ProbeGroup, kt *kegTrac
 	mux.Handle("/api/temps/month", http.HandlerFunc(ws.serveMonthTemps))
 	mux.Handle("/api/temps/all", http.HandlerFunc(ws.serveAllTemps))
 	mux.Handle("/api/temps/now", http.HandlerFunc(ws.serveCurrentTemps))
+	mux.Handle("/api/compressor/now", http.HandlerFunc(ws.serveCompressorNow))
 	mux.Handle("/api/compressor/all", http.HandlerFunc(ws.serveAllCompressor))
 	mux.Handle("/api/compressor/month", http.HandlerFunc(ws.serveMonthCompressor))
+	mux.Handle("/api/config", http.HandlerFunc(ws.serveConfig))
 
 	svr := &http.Server{
 		ErrorLog: lg,
 		Handler:  mux,
 	}
-	ws.srv=svr
-	
+	ws.srv = svr
+
 	return ws, nil
 }
 
@@ -86,7 +93,7 @@ func (ws *webserver) serveMonthTemps(w http.ResponseWriter, r *http.Request) {
 
 func (ws *webserver) serveCurrentTemps(w http.ResponseWriter, r *http.Request) {
 	jenc := json.NewEncoder(w)
-	temps, err := ws.probes.ReadAlias()
+	temps, err := ws.probes.Read()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -110,6 +117,14 @@ func (ws *webserver) serveAllCompressor(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func (ws *webserver) serveCompressorNow(w http.ResponseWriter, r *http.Request) {
+	jenc := json.NewEncoder(w)
+	w.Header().Set("Content-Type", "application/json")
+	if err := jenc.Encode(ws.compressor.State()); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+}
+
 func (ws *webserver) serveMonthCompressor(w http.ResponseWriter, r *http.Request) {
 	jenc := json.NewEncoder(w)
 	comps, err := ws.kt.GetCompressor(time.Now())
@@ -119,6 +134,35 @@ func (ws *webserver) serveMonthCompressor(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := jenc.Encode(comps); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+}
+
+type kegConfig struct {
+	HighTemp       float32
+	LowTemp        float32
+	TargetTemp     float32
+	ProbeInterval  uint
+	RecordInterval uint
+	Probes         []probeDesc
+}
+
+func (ws *webserver) serveConfig(w http.ResponseWriter, r *http.Request) {
+	jenc := json.NewEncoder(w)
+	low, high, target := ws.cfg.TemperatureRange()
+	probeInt := uint(ws.cfg.ProbeInterval().Seconds())
+	recordInt := uint(ws.cfg.TemperatureRecordInterval())
+	pbs := ws.cfg.ProbeList()
+	kc := kegConfig{
+		HighTemp:       high,
+		LowTemp:        low,
+		TargetTemp:     target,
+		ProbeInterval:  probeInt,
+		RecordInterval: recordInt,
+		Probes:         pbs,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := jenc.Encode(kc); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 }

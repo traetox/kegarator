@@ -92,15 +92,13 @@ func main() {
 	}
 	defer kegTracker.Close()
 
-
 	//bind for the webserver
-	ws, err := NewWebserver(c.Bind(), c.WebDir(), probes, kegTracker, lg)
+	ws, err := NewWebserver(c.Bind(), c.WebDir(), probes, compressor, kegTracker, c, lg)
 	if err != nil {
 		lg.Println("Failed to create webserver", c.Bind())
 		return
 	}
 	defer ws.Close()
-
 	//fire off the management routine
 	wg := sync.WaitGroup{}
 	wg.Add(3)
@@ -114,7 +112,7 @@ func main() {
 
 func recordTemps(interval time.Duration, probes *ds18b20.ProbeGroup, kt *kegTracker, wg *sync.WaitGroup) {
 	defer wg.Done()
-	
+
 	for {
 		temps := make(map[string]float32, 1)
 		t, err := probes.ReadAlias()
@@ -127,6 +125,7 @@ func recordTemps(interval time.Duration, probes *ds18b20.ProbeGroup, kt *kegTrac
 			temps[k] = v.Celsius()
 		}
 		kt.AddTemps(time.Now(), temps)
+		time.Sleep(interval)
 	}
 }
 

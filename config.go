@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -13,7 +14,7 @@ const (
 	defaultBindPort           uint16  = 80
 	defaultProbeInterval      uint16  = 5
 	defaultTempRecordInterval uint    = 60 * 60 //every hour
-	defaultBindIface          string  = ``
+	defaultBindAddress        string  = ``
 	defaultWwwDir             string  = `/opt/kegarator`
 	defaultMinTempC           float32 = 0.0
 	defaultMaxTempC           float32 = 6.0
@@ -28,11 +29,13 @@ const (
 type probes struct {
 	alias             string
 	compressorControl bool
+	minOverride       float32
+	maxOverride       float32
 }
 
 type conf struct {
 	port                         uint16
-	iface                        string
+	addr                         string
 	wwwdir                       string
 	interval                     uint16
 	tempRecordInterval           uint
@@ -45,7 +48,7 @@ type conf struct {
 type config struct {
 	Global struct {
 		Bind_Port                   uint16
-		Bind_Interface              string
+		Bind_Address                string
 		WWW_Dir                     string
 		Keg_DB                      string
 		Temperature_Probe_Interval  uint16
@@ -58,6 +61,8 @@ type config struct {
 	Alias map[string]*struct {
 		ID                 string
 		Compressor_Control bool
+		Min_Override       float32
+		Max_Override       float32
 	}
 }
 
@@ -97,12 +102,17 @@ func OpenConfig(confFile string) (*conf, error) {
 			if ok {
 				return nil, errors.New("Duplicate alias")
 			}
-			amap[k] = probes{v.ID, v.Compressor_Control}
+			amap[k] = probes{
+				alias:             v.ID,
+				compressorControl: v.Compressor_Control,
+				minOverride:       v.Min_Override,
+				maxOverride:       v.Max_Override,
+			}
 		}
 	}
 	return &conf{
 		port:               cfg.Global.Bind_Port,
-		iface:              cfg.Global.Bind_Interface,
+		addr:               cfg.Global.Bind_Address,
 		wwwdir:             cfg.Global.WWW_Dir,
 		interval:           cfg.Global.Temperature_Probe_Interval,
 		tempRecordInterval: cfg.Global.Temperature_Record_Interval,
@@ -122,7 +132,7 @@ func prepopulate(c *config) error {
 	}
 	c.Global.WWW_Dir = defaultWwwDir
 	c.Global.Bind_Port = defaultBindPort
-	c.Global.Bind_Interface = defaultBindIface
+	c.Global.Bind_Address = defaultBindAddress
 	c.Global.Temperature_Probe_Interval = defaultProbeInterval
 	c.Global.Minimum_Temperature = defaultMinTempC
 	c.Global.Maximum_Temperature = defaultMaxTempC
@@ -139,7 +149,7 @@ func (c conf) WebDir() string {
 }
 
 func (c conf) Bind() string {
-	return net.JoinHostPort(c.iface, fmt.Sprintf("%d", c.port))
+	return net.JoinHostPort(c.addr, fmt.Sprintf("%d", c.port))
 }
 
 func (c conf) Aliases() map[string]string {
@@ -177,3 +187,41 @@ func (c conf) AliasCompressorControl(alias string) (bool, error) {
 func (c conf) KegDB() string {
 	return c.kegDB
 }
+
+type probeDesc struct {
+	ID                string
+	Alias             string
+	CompressorControl bool
+	MinOverride       float32
+	MaxOverride       float32
+}
+type probeDescL []probeDesc
+
+func (c conf) ProbeList() []probeDesc {
+	var pd []probeDesc
+	for k, v := range c.aliases {
+		pd = append(pd, probeDesc{
+			ID:                v.alias,
+			Alias:             k,
+			CompressorControl: v.compressorControl,
+			MinOverride:       v.minOverride,
+			MaxOverride:       v.maxOverride,
+		})
+	}
+	sort.Sort(probeDescL(pd))
+	return pd
+}
+
+func (p probeDescL) Less(i, j int) bool {
+	//compressor control probes always have priority
+	if p[i].CompressorControl && !p[j].CompressorControl {
+		return true
+	} else if p[j].CompressorControl && !p[i].CompressorControl {
+		return false
+	}
+
+	//if compressor control is equivelent, sort on alias name
+	return p[i].Alias < p[j].Alias
+}
+func (p probeDescL) Len() int      { return len(p) }
+func (p probeDescL) Swap(i, j int) { p[i], p[j] = p[j], p[i] }
