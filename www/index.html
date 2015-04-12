@@ -11,6 +11,7 @@
     <script src="js/bootstrap.min.js"></script>
     <script src="js/justgage.js"></script>
     <script src="js/raphael.js"></script>
+    <script src="js/dygraph-combined.js"></script>
     <script src="js/main.js"></script>
   </head>
   <body>
@@ -34,6 +35,22 @@
     </div>
   </div>
   <div class="row gauges" id="gauges"></div>
+  <div class="row graphs" id="tempgraph" style="width:100%;"></div>
+  <div class="row graphs" id="compressorgraph" style="width:100%;"></div>
+  <div class="row graphs">
+    <div class="panel panel-default col-xs-12 col-sm-6 col-md-4 col-lg-2">
+      <div class="panel-heading">Total Compressor Time</div>
+      <div class="panel-body">
+        <h4 id="totalCompressorTime">00:00:00</h4>
+      </div>
+    </div>
+    <div class="panel panel-default col-xs-12 col-sm-6 col-md-4 col-lg-2">
+      <div class="panel-heading">Total Kegarator Power Cost</div>
+      <div class="panel-body">
+        <h4 id="totalPowerCost">$00.00</h4>
+      </div>
+    </div>
+  </div>
   </body>
   <script>
     $( document ).ready( initHandler )

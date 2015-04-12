@@ -41,6 +41,8 @@ type conf struct {
 	tempRecordInterval           uint
 	minTemp, maxTemp, targetTemp float32
 	compressorGPIO               uint16
+	powerRate                    float32 //in cents per KW/h
+	compressorDraw               float32 //in watts
 	kegDB                        string
 	aliases                      map[string]probes
 }
@@ -57,6 +59,8 @@ type config struct {
 		Maximum_Temperature         float32
 		Target_Temperature          float32
 		Compressor_GPIO             uint16
+		Compressor_Power_Draw       float32
+		Power_Rate                  float32
 	}
 	Alias map[string]*struct {
 		ID                 string
@@ -120,6 +124,8 @@ func OpenConfig(confFile string) (*conf, error) {
 		maxTemp:            cfg.Global.Maximum_Temperature,
 		targetTemp:         cfg.Global.Target_Temperature,
 		compressorGPIO:     cfg.Global.Compressor_GPIO,
+		compressorDraw:     cfg.Global.Compressor_Power_Draw,
+		powerRate:          cfg.Global.Power_Rate,
 		kegDB:              cfg.Global.Keg_DB,
 
 		aliases: amap,
@@ -174,6 +180,14 @@ func (c conf) ProbeInterval() time.Duration {
 
 func (c conf) TemperatureRecordInterval() time.Duration {
 	return time.Duration(c.tempRecordInterval) * time.Second
+}
+
+func (c conf) PowerRate() float32 {
+	return c.powerRate
+}
+
+func (c conf) CompressorPowerDraw() float32 {
+	return c.compressorDraw
 }
 
 func (c conf) AliasCompressorControl(alias string) (bool, error) {

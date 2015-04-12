@@ -144,6 +144,8 @@ type kegConfig struct {
 	TargetTemp     float32
 	ProbeInterval  uint
 	RecordInterval uint
+	PowerRate      float32
+	PowerDraw      float32
 	Probes         []probeDesc
 }
 
@@ -152,6 +154,9 @@ func (ws *webserver) serveConfig(w http.ResponseWriter, r *http.Request) {
 	low, high, target := ws.cfg.TemperatureRange()
 	probeInt := uint(ws.cfg.ProbeInterval().Seconds())
 	recordInt := uint(ws.cfg.TemperatureRecordInterval())
+	powerDraw := ws.cfg.CompressorPowerDraw()
+	powerRate := ws.cfg.PowerRate()
+
 	pbs := ws.cfg.ProbeList()
 	kc := kegConfig{
 		HighTemp:       high,
@@ -159,6 +164,8 @@ func (ws *webserver) serveConfig(w http.ResponseWriter, r *http.Request) {
 		TargetTemp:     target,
 		ProbeInterval:  probeInt,
 		RecordInterval: recordInt,
+		PowerRate:      powerRate,
+		PowerDraw:      powerDraw,
 		Probes:         pbs,
 	}
 	w.Header().Set("Content-Type", "application/json")

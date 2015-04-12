@@ -6,6 +6,9 @@ var tempMax = 0.0;
 var tempTarget = 0.0;
 var probeInterval = 0;
 var recordInterval = 0;
+var compressorDraw = 0.0;
+var powerRate = 0.0;
+var monitarySymbol = "$";
 
 
 function initHandler() {
@@ -16,6 +19,8 @@ function initHandler() {
 		tempTarget = data.TargetTemp;
 		probeInterval = data.ProbeInterval;
 		recordInterval = data.RecordInterval;
+		compressorDraw = data.PowerDraw;
+		powerRate = data.PowerRate;
 		$.each(data.Probes, function(k, v) {
 			temperatureIDs.push(v);
 		});
@@ -144,6 +149,7 @@ function buildTemperatureGraphs() {
 function buildCompressorGraphs() {
 	var readings = [];
 	var labels = ["Time", "Compressor Activity"];
+	var timeTotal = 0;
 	
 	$.getJSON( "/api/compressor/all", function( data ) {
 		if(data.length == 0) {
@@ -153,6 +159,7 @@ function buildCompressorGraphs() {
 			var start = new Date(data[i].Start)
 			var stop = new Date(data[i].Stop)
 			var timeOn = (stop.getTime() - start.getTime())/1000
+			timeTotal += (stop.getTime() - start.getTime())
 			readings.push([start, timeOn])
 		});
 	}).fail(function(error) {
@@ -167,5 +174,22 @@ function buildCompressorGraphs() {
                    }
                 );
                 dg.updateOptions({'file': readings});
+		runHours = timeTotal/(3600.0*1000.0)
+		kwHours = (compressorDraw/1000.0)*runHours
+		totalCost = kwHours*(powerRate/100.0)
+		if(powerRate > 0.0) {
+			$('#totalPowerCost').html(monitarySymbol+totalCost.toFixed(2))
+		} else {
+			$('#totalPowerCost').html("N/A")
+		}
+		$('#totalCompressorTime').html(msToTime(timeTotal))
 	});
+}
+
+function msToTime(v) {
+	var days = v / 8.64e7 | 0;
+	var hrs  = (v % 8.64e7)/ 3.6e6 | 0;
+	var mins = Math.round((v % 3.6e6) / 6e4);
+	return days + ':' + z(hrs) + ':' + z(mins);
+	function z(n){return (n<10?'0':'')+n;}
 }
