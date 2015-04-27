@@ -185,9 +185,14 @@ func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf
 		}
 		if compressor.State() {
 			allInsideRange := true
+			//we want to make sure the compressor is on long enough to actually do something
+			if time.Since(started).Seconds() < c.CompressorMinOnTime().Seconds() {
+				allInsideRange = false
+			}
 			//loop through and see what we should do
 			for i := range probeValues {
-				if probeValues[i] > max || probeValues[i] < target {
+				//we keep the compressor on if one of the probes is showing a warm value
+				if probeValues[i] > target {
 					allInsideRange = false
 				}
 			}

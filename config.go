@@ -13,6 +13,7 @@ import (
 const (
 	defaultBindPort           uint16  = 80
 	defaultProbeInterval      uint16  = 5
+	defaultCompressorMinTime  uint16  = 60      //compressor should stay on for 60 seconds
 	defaultTempRecordInterval uint    = 60 * 60 //every hour
 	defaultBindAddress        string  = ``
 	defaultWwwDir             string  = `/opt/kegarator`
@@ -41,6 +42,7 @@ type conf struct {
 	tempRecordInterval           uint
 	minTemp, maxTemp, targetTemp float32
 	compressorGPIO               uint16
+	compressorOnTime             uint16
 	powerRate                    float32 //in cents per KW/h
 	compressorDraw               float32 //in watts
 	kegDB                        string
@@ -180,6 +182,10 @@ func (c conf) ProbeInterval() time.Duration {
 
 func (c conf) TemperatureRecordInterval() time.Duration {
 	return time.Duration(c.tempRecordInterval) * time.Second
+}
+
+func (c conf) CompressorMinOnTime() time.Duration {
+	return time.Duration(c.compressorOnTime) * time.Second
 }
 
 func (c conf) PowerRate() float32 {
