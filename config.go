@@ -62,6 +62,7 @@ type config struct {
 		Target_Temperature          float32
 		Compressor_GPIO             uint16
 		Compressor_Power_Draw       float32
+		Compressor_Min_On_Time      uint16
 		Power_Rate                  float32
 	}
 	Alias map[string]*struct {
@@ -127,6 +128,7 @@ func OpenConfig(confFile string) (*conf, error) {
 		targetTemp:         cfg.Global.Target_Temperature,
 		compressorGPIO:     cfg.Global.Compressor_GPIO,
 		compressorDraw:     cfg.Global.Compressor_Power_Draw,
+		compressorOnTime:   cfg.Global.Compressor_Min_On_Time,
 		powerRate:          cfg.Global.Power_Rate,
 		kegDB:              cfg.Global.Keg_DB,
 
@@ -146,6 +148,7 @@ func prepopulate(c *config) error {
 	c.Global.Maximum_Temperature = defaultMaxTempC
 	c.Global.Target_Temperature = defaultTargetTempC
 	c.Global.Compressor_GPIO = defaultCompressorGPIO
+	c.Global.Compressor_Min_On_Time = defaultCompressorMinTime
 	c.Global.Keg_DB = defaultKegDB
 
 	c.Alias = nil

@@ -149,12 +149,14 @@ func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf
 		//update temps
 		if err := probes.Update(); err != nil {
 			lg.Printf("Update failure: %v\n", err)
-			return
+			time.Sleep(c.ProbeInterval())
+			continue
 		}
 		temps, err := probes.Read()
 		if err != nil {
 			lg.Printf("Read failed: %v\n", err)
-			return
+			time.Sleep(c.ProbeInterval())
+			continue
 		}
 		//check temperatures and set compressor
 		forceOff := false
