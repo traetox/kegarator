@@ -1,12 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"flag"
+	"fmt"
 	"log"
+	"net"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/gravwell/ingest"
+	"github.com/gravwell/ingest/entry"
 	ds18b20 "github.com/traetox/goDS18B20"
 	gpio "github.com/traetox/goGPIO"
 )
@@ -17,6 +23,9 @@ var (
 	compressorControlAliases []string
 	logFile                  string = `/var/log/kegarator.log`
 	lg                       *log.Logger
+
+	tempTagId uint16 = 0x1200
+	compTagId uint16 = 0x1320
 )
 
 func init() {
@@ -84,33 +93,38 @@ func main() {
 		return
 	}
 
-	//open the keg tracker
-	kegTracker, err := NewTracker(c.KegDB())
+	mxConfig, err := c.MuxerConfig()
 	if err != nil {
-		lg.Println("Failed to create kegTracker", err)
-		return
+		log.Fatal("Failed to acquire ingester config")
 	}
-	defer kegTracker.Close()
 
-	//bind for the webserver
-	ws, err := NewWebserver(c.Bind(), c.WebDir(), probes, compressor, kegTracker, c, lg)
+	//open an ingester
+	igst, err := ingest.NewMuxer(mxConfig)
 	if err != nil {
-		lg.Println("Failed to create webserver", c.Bind())
-		return
+		log.Fatal("Failed to get muxer config", err)
 	}
-	defer ws.Close()
+
+	kl := &keglog{
+		mx: igst,
+	}
+	if kl.logtag, err = igst.GetTag(printTag); err != nil {
+		log.Fatal("Failed to get print tag", err)
+	}
+	if kl.kegtag, err = igst.GetTag(kegTag); err != nil {
+		log.Fatal("Failed to get temp tag", err)
+	}
+
 	//fire off the management routine
 	wg := sync.WaitGroup{}
-	wg.Add(3)
-	go manageCompressor(probes, compressor, c, kegTracker, &wg)
+	wg.Add(2)
+	go manageCompressor(probes, compressor, c, kl, &wg)
 	if c.TemperatureRecordInterval() > 0 {
-		go recordTemps(c.TemperatureRecordInterval(), probes, kegTracker, &wg)
+		go recordTemps(c.TemperatureRecordInterval(), probes, kl, &wg)
 	}
-	go ws.Serve(&wg)
 	wg.Wait()
 }
 
-func recordTemps(interval time.Duration, probes *ds18b20.ProbeGroup, kt *kegTracker, wg *sync.WaitGroup) {
+func recordTemps(interval time.Duration, probes *ds18b20.ProbeGroup, kt *keglog, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for {
@@ -124,7 +138,7 @@ func recordTemps(interval time.Duration, probes *ds18b20.ProbeGroup, kt *kegTrac
 		for k, v := range t {
 			temps[k] = v.Celsius()
 		}
-		kt.AddTemps(time.Now(), temps)
+		kt.AddTemps(temps)
 		time.Sleep(interval)
 	}
 }
@@ -137,7 +151,7 @@ func compressorPanic(compressor *gpio.GPIO) {
 	}
 }
 
-func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf, kt *kegTracker, wg *sync.WaitGroup) {
+func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf, kt *keglog, wg *sync.WaitGroup) {
 	defer compressorPanic(compressor) //ensure that compressor always goes off on our way out
 	defer wg.Done()
 	min, max, target := c.TemperatureRange()
@@ -226,4 +240,96 @@ func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf
 		}
 		time.Sleep(c.ProbeInterval())
 	}
+}
+
+type keglog struct {
+	mx     *ingest.IngestMuxer
+	logtag entry.EntryTag
+	kegtag entry.EntryTag
+}
+
+func (kl keglog) Printf(arg string, args ...interface{}) error {
+	src, err := kl.mx.SourceIP()
+	if err != nil {
+		return err
+	}
+	s := fmt.Sprintf(arg, args...)
+	e := entry.Entry{
+		TS:   entry.Now(),
+		Tag:  kl.logtag,
+		SRC:  src,
+		Data: []byte(s),
+	}
+	return kl.mx.WriteEntry(&e)
+}
+
+func (kl keglog) AddTemps(temps map[string]float32) error {
+	src, err := kl.mx.SourceIP()
+	if err != nil {
+		return err
+	}
+	for k, v := range temps {
+		bb := bytes.NewBuffer(nil)
+		ts := entry.Now()
+		if err := binary.Write(bb, binary.BigEndian, tempTagId); err != nil {
+			return err
+		}
+		if err := binary.Write(bb, binary.BigEndian, ts.Sec); err != nil {
+			return err
+		}
+		if err := binary.Write(bb, binary.BigEndian, ts.Nsec); err != nil {
+			return err
+		}
+		if err := binary.Write(bb, binary.BigEndian, v); err != nil {
+			return err
+		}
+		if err := binary.Write(bb, binary.BigEndian, k); err != nil {
+			return err
+		}
+		e := entry.Entry{
+			TS:   ts,
+			Tag:  kl.kegtag,
+			SRC:  src,
+			Data: bb.Bytes(),
+		}
+		if err := kl.mx.WriteEntry(&e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (kl keglog) AddCompressor(start, stop time.Time) (err error) {
+	s := entry.FromStandard(start)
+	e := entry.FromStandard(stop)
+	var src net.IP
+	if src, err = kl.mx.SourceIP(); err != nil {
+		return
+	}
+	diff := e.Sec - s.Sec
+	if diff < 0 {
+		diff = 0
+	}
+	bb := bytes.NewBuffer(nil)
+	if err := binary.Write(bb, binary.BigEndian, compTagId); err != nil {
+		return err
+	}
+	//encode start, stop, then timeone
+	if err = binary.Write(bb, binary.BigEndian, s); err != nil {
+		return
+	}
+	if err = binary.Write(bb, binary.BigEndian, e); err != nil {
+		return
+	}
+	if err = binary.Write(bb, binary.BigEndian, diff); err != nil {
+		return
+	}
+	ent := entry.Entry{
+		TS:   entry.Now(),
+		SRC:  src,
+		Tag:  kl.kegtag,
+		Data: bb.Bytes(),
+	}
+	err = kl.mx.WriteEntry(&ent)
+	return
 }

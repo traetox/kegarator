@@ -1,16 +1,20 @@
 package main
 
 import (
-	"code.google.com/p/gcfg"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"sort"
 	"time"
+
+	"code.google.com/p/gcfg"
+	"github.com/gravwell/ingest"
+	gravcfg "github.com/gravwell/ingest/config"
 )
 
 const (
+	ingesterName              string  = `kegarator`
 	defaultBindPort           uint16  = 80
 	defaultProbeInterval      uint16  = 5
 	defaultCompressorMinTime  uint16  = 60      //compressor should stay on for 60 seconds
@@ -20,11 +24,17 @@ const (
 	defaultMinTempC           float32 = 0.0
 	defaultMaxTempC           float32 = 6.0
 	defaultTargetTempC        float32 = 5.0
-	defaultKegDB              string  = `/etc/kegarator.db`
 	defaultCompressorGPIO     uint16  = 22
 
 	defaultConfigFile = `/etc/kegarator.conf`
 	maxConfSize       = 1024 * 1024
+
+	printTag string = `keglog`
+	kegTag   string = `keg`
+)
+
+var (
+	tagSet = []string{printTag, kegTag}
 )
 
 type probes struct {
@@ -45,8 +55,8 @@ type conf struct {
 	compressorOnTime             uint16
 	powerRate                    float32 //in cents per KW/h
 	compressorDraw               float32 //in watts
-	kegDB                        string
 	aliases                      map[string]probes
+	Gravwell                     gravcfg.IngestConfig
 }
 
 type config struct {
@@ -54,7 +64,6 @@ type config struct {
 		Bind_Port                   uint16
 		Bind_Address                string
 		WWW_Dir                     string
-		Keg_DB                      string
 		Temperature_Probe_Interval  uint16
 		Temperature_Record_Interval uint
 		Minimum_Temperature         float32
@@ -71,6 +80,7 @@ type config struct {
 		Min_Override       float32
 		Max_Override       float32
 	}
+	Gravwell gravcfg.IngestConfig
 }
 
 func OpenConfig(confFile string) (*conf, error) {
@@ -99,6 +109,9 @@ func OpenConfig(confFile string) (*conf, error) {
 		tot += n
 	}
 	var cfg config
+	if err = prepopulate(&cfg); err != nil {
+		return nil, err
+	}
 	if err := gcfg.ReadStringInto(&cfg, string(bb)); err != nil {
 		return nil, err
 	}
@@ -117,6 +130,10 @@ func OpenConfig(confFile string) (*conf, error) {
 			}
 		}
 	}
+	cfg.Gravwell.Init()
+	if err := cfg.Gravwell.Verify(); err != nil {
+		return nil, err
+	}
 	return &conf{
 		port:               cfg.Global.Bind_Port,
 		addr:               cfg.Global.Bind_Address,
@@ -130,9 +147,7 @@ func OpenConfig(confFile string) (*conf, error) {
 		compressorDraw:     cfg.Global.Compressor_Power_Draw,
 		compressorOnTime:   cfg.Global.Compressor_Min_On_Time,
 		powerRate:          cfg.Global.Power_Rate,
-		kegDB:              cfg.Global.Keg_DB,
-
-		aliases: amap,
+		aliases:            amap,
 	}, nil
 }
 
@@ -149,7 +164,6 @@ func prepopulate(c *config) error {
 	c.Global.Target_Temperature = defaultTargetTempC
 	c.Global.Compressor_GPIO = defaultCompressorGPIO
 	c.Global.Compressor_Min_On_Time = defaultCompressorMinTime
-	c.Global.Keg_DB = defaultKegDB
 
 	c.Alias = nil
 	return nil
@@ -207,10 +221,6 @@ func (c conf) AliasCompressorControl(alias string) (bool, error) {
 	return p.compressorControl, nil
 }
 
-func (c conf) KegDB() string {
-	return c.kegDB
-}
-
 type probeDesc struct {
 	ID                string
 	Alias             string
@@ -248,3 +258,27 @@ func (p probeDescL) Less(i, j int) bool {
 }
 func (p probeDescL) Len() int      { return len(p) }
 func (p probeDescL) Swap(i, j int) { p[i], p[j] = p[j], p[i] }
+
+func (c conf) MuxerConfig() (mc ingest.MuxerConfig, err error) {
+	var tgts []string
+	if tgts, err = c.Gravwell.Targets(); err != nil {
+		return
+	}
+	for _, tgt := range tgts {
+		c := ingest.Target{
+			Address: tgt,
+			Secret:  c.Gravwell.Secret(),
+		}
+		mc.Destinations = append(mc.Destinations, c)
+	}
+	mc.Tags = tagSet
+	mc.VerifyCert = c.Gravwell.Verify_Remote_Certificates
+	mc.EnableCache = c.Gravwell.EnableCache()
+	mc.LogLevel = c.Gravwell.LogLevel()
+	mc.IngesterName = ingesterName
+	mc.CacheConfig = ingest.IngestCacheConfig{
+		FileBackingLocation: c.Gravwell.Ingest_Cache_Path,
+		MaxCacheSize:        uint64(c.Gravwell.Max_Ingest_Cache),
+	}
+	return
+}
