@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 var (
 	configLocOverride        = flag.String("c", "", "Config file location override")
 	logOverride              = flag.String("l", "", "Log file override")
+	verbose                  = flag.Bool("v", false, "Verbose stdout logging")
 	compressorControlAliases []string
 	logFile                  string = `/var/log/kegarator.log`
 	lg                       *log.Logger
@@ -75,8 +77,13 @@ func main() {
 	}
 
 	aliases := c.Aliases()
+	vlog("Starting with probe aliases: %v", aliases)
 	for k, v := range aliases {
-		probes.AssignAlias(k, v)
+		vlog("Assigning %s to %s", k, v)
+		if err := probes.AssignAlias(k, v); err != nil {
+			lg.Println("Probe alias error %s: %v", v, err)
+			return
+		}
 		cc, err := c.AliasCompressorControl(k)
 		if err != nil {
 			lg.Println("Failed to find alias when testing for compressor control", err)
@@ -87,6 +94,10 @@ func main() {
 			compressorControlAliases = append(compressorControlAliases, v)
 		}
 	}
+	xx, err := probes.Read()
+	vlog("testing: %v: %v", xx, err)
+	xx, err = probes.ReadAlias()
+	vlog("testing alias: %v: %v", xx, err)
 	defer probes.Close()
 	if len(compressorControlAliases) == 0 {
 		lg.Println("No probes with compressor control have been defined")
@@ -132,21 +143,28 @@ func main() {
 
 func recordTemps(interval time.Duration, probes *ds18b20.ProbeGroup, kt *keglog, wg *sync.WaitGroup) {
 	defer wg.Done()
-
+	vlog("Starting temperature recording routine with: %v", probes)
 	for {
 		temps := make(map[string]float32, 1)
 		t, err := probes.ReadAlias()
 		if err != nil {
 			lg.Printf("Failed to read probes: %v\n", err)
+			vlog("Failed to read probes: %v", err)
 			time.Sleep(interval)
 			continue
 		}
+		vlog("Read aliases: %v, %v", t, err)
 		for k, v := range t {
 			temps[k] = v.Celsius()
 		}
 		if err := kt.AddTemps(temps); err != nil {
 			lg.Printf("Failed to add temps: %v\n", err)
+			vlog("Failed to Update temperatures: %v", err)
+			time.Sleep(interval)
+			continue
 		}
+		vlog("Updated temperatures: %v", temps)
+		vlog("sleeping %v", interval)
 		time.Sleep(interval)
 	}
 }
@@ -246,6 +264,7 @@ func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf
 				}
 			}
 		}
+		vlog("Updated compressor data")
 		time.Sleep(c.ProbeInterval())
 	}
 }
@@ -274,7 +293,7 @@ func (kl keglog) Printf(arg string, args ...interface{}) error {
 func (kl keglog) AddTemps(temps map[string]float32) error {
 	src, err := kl.mx.SourceIP()
 	if err != nil {
-		fmt.Println("Failed to get source ip", err)
+		vlog("Failed to get source IP: %v", err)
 		return err
 	}
 	for k, v := range temps {
@@ -301,7 +320,9 @@ func (kl keglog) AddTemps(temps map[string]float32) error {
 			SRC:  src,
 			Data: bb.Bytes(),
 		}
-		if err := kl.mx.WriteEntry(&e); err != nil {
+		err = kl.mx.WriteEntry(&e)
+		vlog("Sending temperaturer %d %v %v %s: %v", tempTagId, ts, v, k, err)
+		if err != nil {
 			return err
 		}
 	}
@@ -313,6 +334,7 @@ func (kl keglog) AddCompressor(start, stop time.Time) (err error) {
 	e := entry.FromStandard(stop)
 	var src net.IP
 	if src, err = kl.mx.SourceIP(); err != nil {
+		vlog("Failed to get source IP: %v", err)
 		return
 	}
 	diff := e.Sec - s.Sec
@@ -340,5 +362,14 @@ func (kl keglog) AddCompressor(start, stop time.Time) (err error) {
 		Data: bb.Bytes(),
 	}
 	err = kl.mx.WriteEntry(&ent)
+	vlog("Sending compressor %d %v %v %v: %v", compTagId, s, e, diff, err)
 	return
+}
+
+func vlog(f string, args ...interface{}) {
+	if !*verbose {
+		return
+	}
+	ln := strings.Trim(fmt.Sprintf(f, args...), "\n\t ")
+	fmt.Println(time.Now().Format(time.StampMicro), ln)
 }

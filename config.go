@@ -194,10 +194,16 @@ func (c conf) TemperatureRange() (float32, float32, float32) {
 }
 
 func (c conf) ProbeInterval() time.Duration {
+	if c.interval <= 0 {
+		c.interval = defaultProbeInterval
+	}
 	return time.Duration(c.interval) * time.Second
 }
 
 func (c conf) TemperatureRecordInterval() time.Duration {
+	if c.tempRecordInterval <= 0 {
+		c.tempRecordInterval = defaultTempRecordInterval
+	}
 	return time.Duration(c.tempRecordInterval) * time.Second
 }
 
