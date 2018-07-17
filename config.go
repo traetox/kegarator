@@ -130,7 +130,6 @@ func OpenConfig(confFile string) (*conf, error) {
 			}
 		}
 	}
-	cfg.Gravwell.Init()
 	if err := cfg.Gravwell.Verify(); err != nil {
 		return nil, err
 	}
@@ -148,6 +147,7 @@ func OpenConfig(confFile string) (*conf, error) {
 		compressorOnTime:   cfg.Global.Compressor_Min_On_Time,
 		powerRate:          cfg.Global.Power_Rate,
 		aliases:            amap,
+		Gravwell:           cfg.Gravwell,
 	}, nil
 }
 

@@ -95,13 +95,21 @@ func main() {
 
 	mxConfig, err := c.MuxerConfig()
 	if err != nil {
-		log.Fatal("Failed to acquire ingester config")
+		log.Fatal("Failed to acquire ingester config", err)
 	}
 
 	//open an ingester
 	igst, err := ingest.NewMuxer(mxConfig)
 	if err != nil {
 		log.Fatal("Failed to get muxer config", err)
+	}
+
+	if err := igst.Start(); err != nil {
+		log.Fatal("Failed to start ingest")
+	}
+
+	if err := igst.WaitForHot(3 * time.Second); err != nil {
+		log.Println("Wait for hot timeout", err) //not fatal
 	}
 
 	kl := &keglog{
@@ -118,9 +126,7 @@ func main() {
 	wg := sync.WaitGroup{}
 	wg.Add(2)
 	go manageCompressor(probes, compressor, c, kl, &wg)
-	if c.TemperatureRecordInterval() > 0 {
-		go recordTemps(c.TemperatureRecordInterval(), probes, kl, &wg)
-	}
+	go recordTemps(c.TemperatureRecordInterval(), probes, kl, &wg)
 	wg.Wait()
 }
 
@@ -138,7 +144,9 @@ func recordTemps(interval time.Duration, probes *ds18b20.ProbeGroup, kt *keglog,
 		for k, v := range t {
 			temps[k] = v.Celsius()
 		}
-		kt.AddTemps(temps)
+		if err := kt.AddTemps(temps); err != nil {
+			lg.Printf("Failed to add temps: %v\n", err)
+		}
 		time.Sleep(interval)
 	}
 }
@@ -266,6 +274,7 @@ func (kl keglog) Printf(arg string, args ...interface{}) error {
 func (kl keglog) AddTemps(temps map[string]float32) error {
 	src, err := kl.mx.SourceIP()
 	if err != nil {
+		fmt.Println("Failed to get source ip", err)
 		return err
 	}
 	for k, v := range temps {
@@ -283,7 +292,7 @@ func (kl keglog) AddTemps(temps map[string]float32) error {
 		if err := binary.Write(bb, binary.BigEndian, v); err != nil {
 			return err
 		}
-		if err := binary.Write(bb, binary.BigEndian, k); err != nil {
+		if _, err := bb.WriteString(k); err != nil {
 			return err
 		}
 		e := entry.Entry{
