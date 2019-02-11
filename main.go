@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"strings"
@@ -20,59 +19,64 @@ import (
 
 var (
 	configLocOverride        = flag.String("c", "", "Config file location override")
-	logOverride              = flag.String("l", "", "Log file override")
 	verbose                  = flag.Bool("v", false, "Verbose stdout logging")
 	compressorControlAliases []string
-	logFile                  string = `/var/log/kegarator.log`
-	lg                       *log.Logger
+	lg                       simplelog
 
 	tempTagId uint16 = 0x1200
 	compTagId uint16 = 0x1320
+
+	tempFunc tempPacker = binaryTempPack
+	compFunc compPacker = binaryCompPack
 )
+
+type logger interface {
+	Info(string, ...interface{}) error
+	Warn(string, ...interface{}) error
+	Error(string, ...interface{}) error
+}
+
+type tempPacker func(uint16, entry.Timestamp, float32, string) ([]byte, error)
+type compPacker func(uint16, entry.Timestamp, entry.Timestamp) ([]byte, error)
 
 func init() {
 	flag.Parse()
-	if *logOverride != "" {
-		logFile = *logOverride
-	}
 }
 
 func main() {
-	f, err := os.OpenFile(logFile, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
-	if err != nil {
-		log.Fatal("Failed to open log file", err)
-	}
-	lg = log.New(f, "", log.LstdFlags)
-
 	c, err := OpenConfig(*configLocOverride) //open the default location
 	if err != nil {
-		lg.Println("Failed to open config file: ", err)
+		lg.Error("Failed to open config file: %v", err)
+		return
+	}
+	if err = setupPackers(c.dataFormat); err != nil {
+		lg.Error("failed to setup packers: %v", err)
 		return
 	}
 
 	//open probes and initialize them
 	if err := ds18b20.Setup(); err != nil {
-		lg.Println("Setup failed:", err)
+		lg.Error("Setup failed: %v", err)
 		return
 	}
 	probes, err := ds18b20.New()
 	if err != nil {
-		lg.Println("Failed to create new probe group:", err)
+		lg.Error("Failed to create new probe group: %v", err)
 		return
 	}
 
 	//open compressor and initializae it
 	compressor, err := gpio.New(int(c.CompressorGPIO()))
 	if err != nil {
-		lg.Println("Failed to open compressorGPIO:", err)
+		lg.Error("Failed to open compressorGPIO: %v", err)
 		return
 	}
 	if err := compressor.SetOutput(); err != nil {
-		lg.Println("Failed to set compressor as output:", err)
+		lg.Error("Failed to set compressor as output: %v", err)
 		return
 	}
 	if err := compressor.Off(); err != nil {
-		lg.Println("Failed to initialize the compressor:", err)
+		lg.Error("Failed to initialize the compressor: %v", err)
 		return
 	}
 
@@ -81,12 +85,12 @@ func main() {
 	for k, v := range aliases {
 		vlog("Assigning %s to %s", k, v)
 		if err := probes.AssignAlias(k, v); err != nil {
-			lg.Println("Probe alias error %s: %v", v, err)
+			lg.Error("Probe alias error %s: %v", v, err)
 			return
 		}
 		cc, err := c.AliasCompressorControl(k)
 		if err != nil {
-			lg.Println("Failed to find alias when testing for compressor control", err)
+			lg.Error("Failed to find alias when testing for compressor control %v", err)
 			return
 		}
 
@@ -100,37 +104,47 @@ func main() {
 	vlog("testing alias: %v: %v", xx, err)
 	defer probes.Close()
 	if len(compressorControlAliases) == 0 {
-		lg.Println("No probes with compressor control have been defined")
+		lg.Error("No probes with compressor control have been defined")
 		return
 	}
 
 	mxConfig, err := c.MuxerConfig()
 	if err != nil {
-		log.Fatal("Failed to acquire ingester config", err)
+		lg.Error("Failed to acquire ingester config: %v", err)
+		os.Exit(-1)
 	}
 
 	//open an ingester
 	igst, err := ingest.NewMuxer(mxConfig)
 	if err != nil {
-		log.Fatal("Failed to get muxer config", err)
+		lg.Error("Failed to get muxer config: %v", err)
+		os.Exit(-1)
 	}
 
 	if err := igst.Start(); err != nil {
-		log.Fatal("Failed to start ingest")
+		lg.Error("Failed to start ingest: %v", err)
+		os.Exit(-1)
 	}
 
 	if err := igst.WaitForHot(3 * time.Second); err != nil {
-		log.Println("Wait for hot timeout", err) //not fatal
+		lg.Error("Wait for hot timeout: %v", err) //not fatal
+		os.Exit(-1)
 	}
 
 	kl := &keglog{
 		mx: igst,
 	}
 	if kl.logtag, err = igst.GetTag(printTag); err != nil {
-		log.Fatal("Failed to get print tag", err)
+		lg.Error("Failed to get print tag: %v", err)
+		os.Exit(-1)
 	}
 	if kl.kegtag, err = igst.GetTag(kegTag); err != nil {
-		log.Fatal("Failed to get temp tag", err)
+		lg.Error("Failed to get temp tag: %v", err)
+		os.Exit(-1)
+	}
+	if kl.comptag, err = igst.GetTag(compTag); err != nil {
+		lg.Error("Failed to get compressor tag: %v", err)
+		os.Exit(-1)
 	}
 
 	//fire off the management routine
@@ -148,7 +162,7 @@ func recordTemps(interval time.Duration, probes *ds18b20.ProbeGroup, kt *keglog,
 		temps := make(map[string]float32, 1)
 		t, err := probes.ReadAlias()
 		if err != nil {
-			lg.Printf("Failed to read probes: %v\n", err)
+			lg.Error("Failed to read probes: %v", err)
 			vlog("Failed to read probes: %v", err)
 			time.Sleep(interval)
 			continue
@@ -158,7 +172,7 @@ func recordTemps(interval time.Duration, probes *ds18b20.ProbeGroup, kt *keglog,
 			temps[k] = v.Celsius()
 		}
 		if err := kt.AddTemps(temps); err != nil {
-			lg.Printf("Failed to add temps: %v\n", err)
+			lg.Error("Failed to add temps: %v", err)
 			vlog("Failed to Update temperatures: %v", err)
 			time.Sleep(interval)
 			continue
@@ -171,9 +185,9 @@ func recordTemps(interval time.Duration, probes *ds18b20.ProbeGroup, kt *keglog,
 
 func compressorPanic(compressor *gpio.GPIO) {
 	if err := compressor.Off(); err != nil {
-		lg.Printf("Failed to force compressor off: %v\n", err)
+		lg.Error("Failed to force compressor off: %v", err)
 	} else {
-		lg.Printf("Forced compressor off\n")
+		lg.Error("Forced compressor off")
 	}
 }
 
@@ -188,13 +202,13 @@ func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf
 	for {
 		//update temps
 		if err := probes.Update(); err != nil {
-			lg.Printf("Update failure: %v\n", err)
+			lg.Info("Update failure: %v", err)
 			time.Sleep(c.ProbeInterval())
 			continue
 		}
 		temps, err := probes.Read()
 		if err != nil {
-			lg.Printf("Read failed: %v\n", err)
+			lg.Error("Read failed: %v", err)
 			time.Sleep(c.ProbeInterval())
 			continue
 		}
@@ -206,7 +220,7 @@ func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf
 			if t.Celsius() < min {
 				forceOff = true //going off is always priority
 				if err := compressor.Off(); err != nil {
-					log.Println("Failed to turn off compressor", err)
+					lg.Error("Failed to turn off compressor: %v", err)
 				}
 				break
 			}
@@ -215,11 +229,11 @@ func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf
 		//check if we are being forced off
 		if forceOff {
 			if err := compressor.Off(); err != nil {
-				lg.Println("Compressor failed to disengage", err)
+				lg.Error("Compressor failed to disengage: %v", err)
 			}
 			if started != nilTime {
 				if err := kt.AddCompressor(started, time.Now()); err != nil {
-					lg.Println("Failed to track compressor interval", err)
+					lg.Error("Failed to track compressor interval: %v", err)
 				}
 			}
 			started = time.Time{}
@@ -241,10 +255,10 @@ func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf
 			if allInsideRange {
 				//everybody is good
 				if err := compressor.Off(); err != nil {
-					lg.Println("Failed to disengage compressor", err)
+					lg.Error("Failed to disengage compressor: %v", err)
 				}
 				if err := kt.AddCompressor(started, time.Now()); err != nil {
-					lg.Println("Failed to track compressor interval", err)
+					lg.Error("Failed to track compressor interval: %v", err)
 				}
 				started = nilTime
 			}
@@ -260,7 +274,7 @@ func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf
 			if !allInsideRange {
 				started = time.Now()
 				if err := compressor.On(); err != nil {
-					lg.Println("Compressor failed to start: ", err)
+					lg.Error("Compressor failed to start: %v", err)
 				}
 			}
 		}
@@ -270,9 +284,10 @@ func manageCompressor(probes *ds18b20.ProbeGroup, compressor *gpio.GPIO, c *conf
 }
 
 type keglog struct {
-	mx     *ingest.IngestMuxer
-	logtag entry.EntryTag
-	kegtag entry.EntryTag
+	mx      *ingest.IngestMuxer
+	logtag  entry.EntryTag
+	kegtag  entry.EntryTag
+	comptag entry.EntryTag
 }
 
 func (kl keglog) Printf(arg string, args ...interface{}) error {
@@ -297,28 +312,16 @@ func (kl keglog) AddTemps(temps map[string]float32) error {
 		return err
 	}
 	for k, v := range temps {
-		bb := bytes.NewBuffer(nil)
 		ts := entry.Now()
-		if err := binary.Write(bb, binary.BigEndian, tempTagId); err != nil {
-			return err
-		}
-		if err := binary.Write(bb, binary.BigEndian, ts.Sec); err != nil {
-			return err
-		}
-		if err := binary.Write(bb, binary.BigEndian, ts.Nsec); err != nil {
-			return err
-		}
-		if err := binary.Write(bb, binary.BigEndian, v); err != nil {
-			return err
-		}
-		if _, err := bb.WriteString(k); err != nil {
+		bts, err := tempFunc(tempTagId, ts, v, k)
+		if err != nil {
 			return err
 		}
 		e := entry.Entry{
 			TS:   ts,
 			Tag:  kl.kegtag,
 			SRC:  src,
-			Data: bb.Bytes(),
+			Data: bts,
 		}
 		err = kl.mx.WriteEntry(&e)
 		vlog("Sending temperaturer %d %v %v %s: %v", tempTagId, ts, v, k, err)
@@ -341,25 +344,15 @@ func (kl keglog) AddCompressor(start, stop time.Time) (err error) {
 	if diff < 0 {
 		diff = 0
 	}
-	bb := bytes.NewBuffer(nil)
-	if err := binary.Write(bb, binary.BigEndian, compTagId); err != nil {
-		return err
-	}
-	//encode start, stop, then timeone
-	if err = binary.Write(bb, binary.BigEndian, s); err != nil {
-		return
-	}
-	if err = binary.Write(bb, binary.BigEndian, e); err != nil {
-		return
-	}
-	if err = binary.Write(bb, binary.BigEndian, diff); err != nil {
+	var bts []byte
+	if bts, err = compFunc(compTagId, s, e); err != nil {
 		return
 	}
 	ent := entry.Entry{
 		TS:   entry.Now(),
 		SRC:  src,
-		Tag:  kl.kegtag,
-		Data: bb.Bytes(),
+		Tag:  kl.comptag,
+		Data: bts,
 	}
 	err = kl.mx.WriteEntry(&ent)
 	vlog("Sending compressor %d %v %v %v: %v", compTagId, s, e, diff, err)
@@ -372,4 +365,94 @@ func vlog(f string, args ...interface{}) {
 	}
 	ln := strings.Trim(fmt.Sprintf(f, args...), "\n\t ")
 	fmt.Println(time.Now().Format(time.StampMicro), ln)
+}
+
+type simplelog struct{}
+
+func (nl simplelog) Info(f string, args ...interface{}) (err error) {
+	_, err = fmt.Fprintf(os.Stdout, f+"\n", args...)
+	return
+}
+
+func (nl simplelog) Warn(f string, args ...interface{}) (err error) {
+	_, err = fmt.Fprintf(os.Stdout, f+"\n", args...)
+	return
+}
+
+func (nl simplelog) Error(f string, args ...interface{}) (err error) {
+	_, err = fmt.Fprintf(os.Stderr, f+"\n", args...)
+	return
+}
+
+func setupPackers(tp string) (err error) {
+	tp = strings.TrimSpace(tp)
+	switch tp {
+	case `binary`:
+		tempFunc = binaryTempPack
+		compFunc = binaryCompPack
+	case `text`:
+		tempFunc = textTempPack
+		compFunc = textCompPack
+	default:
+		err = fmt.Errorf("unknown packing format: %v", tp)
+	}
+	return
+}
+
+func binaryTempPack(tg uint16, ts entry.Timestamp, v float32, name string) (bts []byte, err error) {
+	bb := bytes.NewBuffer(nil)
+	if err = binary.Write(bb, binary.BigEndian, tempTagId); err != nil {
+		return
+	}
+	if err = binary.Write(bb, binary.BigEndian, ts.Sec); err != nil {
+		return
+	}
+	if err = binary.Write(bb, binary.BigEndian, ts.Nsec); err != nil {
+		return
+	}
+	if err = binary.Write(bb, binary.BigEndian, v); err != nil {
+		return
+	}
+	if _, err = bb.WriteString(name); err != nil {
+		return
+	}
+	bts = bb.Bytes()
+	return
+}
+
+func textTempPack(tg uint16, ts entry.Timestamp, v float32, name string) (bts []byte, err error) {
+	bts = []byte(fmt.Sprintf("%s\t%x\t%f\t%s", ts.String(), tg, v, name))
+	return
+}
+
+func binaryCompPack(tg uint16, s, e entry.Timestamp) (bts []byte, err error) {
+	diff := e.Sec - s.Sec
+	if diff < 0 {
+		diff = 0
+	}
+	bb := bytes.NewBuffer(nil)
+	if err = binary.Write(bb, binary.BigEndian, tg); err != nil {
+		return
+	}
+	//encode start, stop, then timeone
+	if err = binary.Write(bb, binary.BigEndian, s); err != nil {
+		return
+	}
+	if err = binary.Write(bb, binary.BigEndian, e); err != nil {
+		return
+	}
+	if err = binary.Write(bb, binary.BigEndian, diff); err != nil {
+		return
+	}
+	bts = bb.Bytes()
+	return
+}
+
+func textCompPack(tg uint16, s, e entry.Timestamp) (bts []byte, err error) {
+	diff := e.Sec - s.Sec
+	if diff < 0 {
+		diff = 0
+	}
+	bts = []byte(fmt.Sprintf("%s\t%s\t%x\t%ds", s.String(), e.String(), tg, diff))
+	return
 }

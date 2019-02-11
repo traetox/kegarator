@@ -25,16 +25,18 @@ const (
 	defaultMaxTempC           float32 = 6.0
 	defaultTargetTempC        float32 = 5.0
 	defaultCompressorGPIO     uint16  = 22
+	defaultDataFormat         string  = "binary"
 
 	defaultConfigFile = `/etc/kegarator.conf`
 	maxConfSize       = 1024 * 1024
 
 	printTag string = `keglog`
 	kegTag   string = `keg`
+	compTag  string = `compressor`
 )
 
 var (
-	tagSet = []string{printTag, kegTag}
+	tagSet = []string{printTag, kegTag, compTag}
 )
 
 type probes struct {
@@ -55,6 +57,7 @@ type conf struct {
 	compressorOnTime             uint16
 	powerRate                    float32 //in cents per KW/h
 	compressorDraw               float32 //in watts
+	dataFormat                   string
 	aliases                      map[string]probes
 	Gravwell                     gravcfg.IngestConfig
 }
@@ -73,6 +76,7 @@ type config struct {
 		Compressor_Power_Draw       float32
 		Compressor_Min_On_Time      uint16
 		Power_Rate                  float32
+		Data_Format                 string
 	}
 	Alias map[string]*struct {
 		ID                 string
@@ -146,6 +150,7 @@ func OpenConfig(confFile string) (*conf, error) {
 		compressorDraw:     cfg.Global.Compressor_Power_Draw,
 		compressorOnTime:   cfg.Global.Compressor_Min_On_Time,
 		powerRate:          cfg.Global.Power_Rate,
+		dataFormat:         cfg.Global.Data_Format,
 		aliases:            amap,
 		Gravwell:           cfg.Gravwell,
 	}, nil
@@ -164,8 +169,7 @@ func prepopulate(c *config) error {
 	c.Global.Target_Temperature = defaultTargetTempC
 	c.Global.Compressor_GPIO = defaultCompressorGPIO
 	c.Global.Compressor_Min_On_Time = defaultCompressorMinTime
-
-	c.Alias = nil
+	c.Global.Data_Format = defaultDataFormat
 	return nil
 }
 
